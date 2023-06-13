@@ -8,18 +8,51 @@ on:
 env:
   TF_CLOUD_ORGANIZATION: "test-lab-ltimossi"
   TF_API_TOKEN: "${{ secrets.TF_API_TOKEN }}"
-  TF_WORKSPACE: "learn-terraform-github-actions"
+  TF_WORKSPACE: "ansible-terraform-actions-v1"
   CONFIG_DIRECTORY: "./"
+  PUBLIC_IP:
 
 jobs:
-  terraform:
-    if: github.repository != 'hashicorp-education/learn-terraform-github-actions'
+  terraform-plan:
+    name: "Terraform Plan"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Upload Configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@v1.0.0
+        id: plan-upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: ${{ env.CONFIG_DIRECTORY }}
+          speculative: true
+
+      - name: Create Plan Run
+        uses: hashicorp/tfc-workflows-github/actions/create-run@v1.0.0
+        id: plan-run
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.plan-upload.outputs.configuration_version_id }}
+          plan_only: true
+
+      - name: Get Plan Outputt
+        uses: hashicorp/tfc-workflows-github/actions/plan-output@v1.0.0
+        id: plan-output
+        with:
+          plan: ${{ fromJSON(steps.plan-run.outputs.payload).data.relationships.plan.data.id }}
+
+  terraform-apply:
+    needs: terraform-plan
     name: "Terraform Apply"
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkoutt
+      - name: Checkout
         uses: actions/checkout@v3
 
       - name: Upload Configurationn
@@ -43,3 +76,38 @@ jobs:
         with:
           run: ${{ steps.apply-run.outputs.run_id }}
           comment: "Apply Run from GitHub Actions CI ${{ github.sha }}"
+  
+  terraform-output:
+    needs: terraform-apply
+    name: "Terraform IP EC2"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+      - run: terraform output
+      - run: echo PUBLIC_IP=$(terraform output vm_ip) >> $GITHUB_ENV
+      - run: echo ${{ env.PUBLIC_IP }}
+  
+  run-playbooks:
+    name: "Ansible Apply"
+    needs: terraform-output
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+      
+      - name: Run Ansible Playbook Nginx
+        shell: bash
+        run: |
+          ansible-playbook -i ${{ env.PUBLIC_IP }}, -u ubuntu --private-key ./devops.pem ./deploy.yaml
+
+
+
